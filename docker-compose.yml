@@ -1,0 +1,67 @@
+version: "3.9"
+
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg15
+    container_name: ft_timescaledb
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-financial_terminal}
+      POSTGRES_USER: ${POSTGRES_USER:-ftuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ftpassword}
+    ports:
+      - "5432:5432"
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+      - ./backend/db/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ftuser} -d ${POSTGRES_DB:-financial_terminal}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: ft_redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:-}
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ft_backend
+    restart: unless-stopped
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      FINNHUB_API_KEY: ${FINNHUB_API_KEY}
+      POSTGRES_HOST: timescaledb
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-financial_terminal}
+      POSTGRES_USER: ${POSTGRES_USER:-ftuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ftpassword}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      SERVER_PORT: ${SERVER_PORT:-8080}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+
+volumes:
+  timescaledb_data:
+  redis_data:
