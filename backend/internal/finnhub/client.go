@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/AustinYI111/financial-terminal/backend/internal/models"
@@ -15,23 +16,89 @@ import (
 
 const baseURL = "https://finnhub.io/api/v1"
 
+// rateLimiter enforces a minimum interval between API calls.
+type rateLimiter struct {
+	mu       sync.Mutex
+	interval time.Duration
+	lastCall time.Time
+}
+
+// wait blocks until the rate limit interval has elapsed, or ctx is cancelled.
+func (rl *rateLimiter) wait(ctx context.Context) error {
+	rl.mu.Lock()
+	now := time.Now()
+	next := rl.lastCall.Add(rl.interval)
+	var delay time.Duration
+	if now.Before(next) {
+		delay = next.Sub(now)
+	}
+	rl.mu.Unlock()
+
+	if delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	rl.mu.Lock()
+	rl.lastCall = time.Now()
+	rl.mu.Unlock()
+	return nil
+}
+
 // Client is a Finnhub API client.
 type Client struct {
-	apiKey     string
-	httpClient *http.Client
+	apiKey      string
+	httpClient  *http.Client
+	rateLimiter *rateLimiter
 }
 
 // New creates a new Finnhub client.
+// callsPerMinute sets the maximum number of API calls per minute (free tier: 60).
 func New(apiKey string) *Client {
 	return &Client{
 		apiKey: apiKey,
 		httpClient: &http.Client{
 			Timeout: 15 * time.Second,
 		},
+		// Finnhub free tier: 60 calls/min → 1 call/sec minimum interval
+		rateLimiter: &rateLimiter{interval: time.Second},
 	}
 }
 
 func (c *Client) get(ctx context.Context, path string, params map[string]string, dest interface{}) error {
+	const maxAttempts = 3
+
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if err := c.rateLimiter.wait(ctx); err != nil {
+			return fmt.Errorf("rate limiter: %w", err)
+		}
+
+		lastErr = c.doRequest(ctx, path, params, dest)
+		if lastErr == nil {
+			return nil
+		}
+
+		if attempt < maxAttempts-1 {
+			// Exponential backoff: 500ms, 1s (not applied after the last attempt)
+			backoff := time.Duration(500<<uint(attempt)) * time.Millisecond
+			log.Warn().Err(lastErr).Int("attempt", attempt+1).Dur("backoff", backoff).Msg("finnhub request failed, retrying")
+
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return fmt.Errorf("context cancelled during retry backoff: %w", ctx.Err())
+			}
+		}
+	}
+
+	return lastErr
+}
+
+func (c *Client) doRequest(ctx context.Context, path string, params map[string]string, dest interface{}) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+path, nil)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
