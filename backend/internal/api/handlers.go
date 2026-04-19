@@ -95,7 +95,7 @@ func (h *Handler) getQuote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = h.cache.Set(r.Context(), cacheKey, q, 15*time.Second)
+	_ = h.cache.Set(r.Context(), cacheKey, q, 30*time.Minute)
 	writeJSON(w, http.StatusOK, q)
 }
 
@@ -122,7 +122,14 @@ func (h *Handler) getCandles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = h.cache.Set(r.Context(), cacheKey, c, 5*time.Minute)
+	// Intraday resolutions (1, 5, 15, 30, 60 min) → 5 min TTL
+	// Daily / weekly / monthly → 2 hour TTL
+	candleTTL := 2 * time.Hour
+	switch resolution {
+	case "1", "5", "15", "30", "60":
+		candleTTL = 5 * time.Minute
+	}
+	_ = h.cache.Set(r.Context(), cacheKey, c, candleTTL)
 	writeJSON(w, http.StatusOK, c)
 }
 
@@ -146,7 +153,7 @@ func (h *Handler) getMarketNews(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = h.cache.Set(r.Context(), cacheKey, n, 10*time.Minute)
+	_ = h.cache.Set(r.Context(), cacheKey, n, 30*time.Minute)
 	writeJSON(w, http.StatusOK, n)
 }
 
@@ -169,7 +176,7 @@ func (h *Handler) getCompanyNews(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = h.cache.Set(r.Context(), cacheKey, n, 10*time.Minute)
+	_ = h.cache.Set(r.Context(), cacheKey, n, 30*time.Minute)
 	writeJSON(w, http.StatusOK, n)
 }
 
